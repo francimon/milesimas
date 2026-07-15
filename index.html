@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Milésimas — adiviná la canción</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- Pantalla 1: configuración -->
+  <section id="screen-setup" class="screen" data-screen>
+    <header class="brand">
+      <p class="eyebrow">Un juego de reconocimiento musical</p>
+      <h1>Milésimas</h1>
+      <p class="tag">¿Cuánto necesitás escuchar de una canción para reconocerla?</p>
+    </header>
+
+    <form id="setup-form" novalidate>
+      <div class="field">
+        <div class="tabs" role="tablist">
+          <button type="button" class="tab active" data-tab="spotify" role="tab" aria-selected="true">Playlist de Spotify</button>
+          <button type="button" class="tab" data-tab="manual" role="tab" aria-selected="false">Lista manual</button>
+        </div>
+
+        <div class="tab-panel" id="tab-spotify" data-panel>
+          <label for="spotify-url">Link de la playlist</label>
+          <div class="spotify-fetch-row">
+            <input type="text" id="spotify-url" placeholder="https://open.spotify.com/playlist/...">
+            <button type="button" id="fetch-playlist-btn" class="btn-secondary">Buscar</button>
+          </div>
+          <p class="hint" id="spotify-status">Pegá el link de una playlist pública de Spotify.</p>
+        </div>
+
+        <div class="tab-panel" id="tab-manual" data-panel hidden>
+          <label for="track-list">Canciones (una por línea)</label>
+          <textarea id="track-list" rows="7" placeholder="Bohemian Rhapsody - Queen&#10;Billie Jean - Michael Jackson&#10;Formato &quot;Canción - Artista&quot;"></textarea>
+        </div>
+
+        <p class="hint">El audio de cada canción se busca en el catálogo público de iTunes.</p>
+      </div>
+
+      <div class="field-row">
+        <fieldset class="difficulty">
+          <legend>Dificultad</legend>
+          <label class="dial">
+            <input type="radio" name="difficulty" value="facil">
+            <span>Fácil</span>
+            <em>0.5s · 2s · 10s</em>
+          </label>
+          <label class="dial">
+            <input type="radio" name="difficulty" value="normal" checked>
+            <span>Normal</span>
+            <em>0.5s · 1s · 5s</em>
+          </label>
+          <label class="dial">
+            <input type="radio" name="difficulty" value="dificil">
+            <span>Difícil</span>
+            <em>0.3s · 0.8s · 3s</em>
+          </label>
+        </fieldset>
+
+        <div class="field rounds-field">
+          <label for="rounds">Cantidad de canciones</label>
+          <input type="number" id="rounds" min="1" max="30" value="5">
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="player-name">Tu nombre</label>
+        <input type="text" id="player-name" maxlength="24" placeholder="Cómo aparecés en el ranking" required>
+      </div>
+
+      <p id="setup-error" class="error" role="alert" hidden></p>
+      <button type="submit" class="btn-primary">Empezar</button>
+    </form>
+  </section>
+
+  <!-- Pantalla intermedia: buscando audios -->
+  <section id="screen-loading" class="screen" data-screen hidden>
+    <div class="loading-panel">
+      <p class="loading-label">Buscando fragmentos de audio…</p>
+      <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+      <p class="progress-count" id="progress-count">0 / 0</p>
+    </div>
+  </section>
+
+  <!-- Pantalla 2: juego -->
+  <section id="screen-game" class="screen" data-screen hidden>
+    <div class="game-hud">
+      <span id="round-counter">Canción 1 de 5</span>
+      <span id="score-display">0 pts</span>
+    </div>
+
+    <div class="waveform-wrap">
+      <div id="waveform" class="waveform" aria-hidden="true"></div>
+      <div class="tier-readout" id="tier-readout">0.500s</div>
+    </div>
+
+    <button id="play-btn" class="btn-play" type="button" aria-label="Reproducir fragmento">
+      <span class="play-icon">▶</span>
+    </button>
+
+    <div class="guess-area">
+      <input type="text" id="guess-input" autocomplete="off" placeholder="Escribí el nombre de la canción…" aria-label="Nombre de la canción">
+      <ul id="suggestions" class="suggestions" hidden></ul>
+    </div>
+
+    <div class="action-row">
+      <button id="confirm-btn" class="btn-secondary" type="button" disabled>Confirmar</button>
+      <button id="skip-btn" class="btn-ghost" type="button">Saltar →</button>
+    </div>
+
+    <p id="feedback" class="feedback" aria-live="polite"></p>
+  </section>
+
+  <!-- Pantalla 3: resultados -->
+  <section id="screen-end" class="screen" data-screen hidden>
+    <h2>Terminaste, <span id="end-name"></span></h2>
+    <p class="final-score"><span id="end-score">0</span> <small>pts</small></p>
+
+    <h3>Ranking de esta sesión</h3>
+    <ol id="ranking-list" class="ranking-list"></ol>
+    <p class="hint">Este ranking vive solo en tu navegador por ahora. Cuando conectemos el backend, se va a guardar en el servidor y vas a poder verlo desde cualquier dispositivo.</p>
+
+    <button id="play-again-btn" class="btn-primary" type="button">Jugar de nuevo</button>
+  </section>
+
+</div>
+<script src="app.js" defer></script>
+</body>
+</html>
