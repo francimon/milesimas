@@ -30,7 +30,6 @@ const state = {
   score: 0,
   selectedGuessId: null,
   audioCtx: null,
-  sessionRanking: [], // in-memory only, resets on reload — see note in UI
   spotifyEntries: null, // filled in after picking a playlist, { name, artist }[]
   spotifyAccessToken: null,
   spotifyPlaylists: [],
@@ -135,7 +134,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 // register SPOTIFY_REDIRECT_URI as a Redirect URI in your Spotify dashboard
 // (Settings) exactly as it appears once deployed.
 
-const SPOTIFY_CLIENT_ID = 'afef91a1d7be4f6eac409ef86eacb001'; // <- reemplazar
+const SPOTIFY_CLIENT_ID = 'TU_CLIENT_ID_DE_SPOTIFY'; // <- reemplazar
 const SPOTIFY_REDIRECT_URI = window.location.origin + window.location.pathname;
 const SPOTIFY_SCOPES = 'playlist-read-private playlist-read-collaborative';
 
@@ -575,23 +574,44 @@ function advanceToNextRoundOrTrack() {
 
 // ---------- End screen ----------
 
-function endGame() {
-  const entry = { name: state.playerName, score: state.score };
-  state.sessionRanking.push(entry);
-  state.sessionRanking.sort((a, b) => b.score - a.score);
-
+async function endGame() {
   el.endName.textContent = state.playerName;
   el.endScore.textContent = state.score;
+  el.rankingList.innerHTML = '<li>Guardando puntaje…</li>';
+  showScreen('end');
 
-  el.rankingList.innerHTML = '';
-  state.sessionRanking.slice(0, 10).forEach(item => {
+  try {
+    const resp = await fetch('/api/ranking', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: state.playerName,
+        score: state.score,
+        difficulty: state.difficulty,
+      }),
+    });
+    if (!resp.ok) throw new Error('ranking-post-failed');
+    const data = await resp.json();
+    renderRanking(data.ranking);
+  } catch (err) {
+    console.error(err);
+    el.rankingList.innerHTML = '';
     const li = document.createElement('li');
-    if (item === entry) li.classList.add('you');
+    li.textContent = 'No pudimos conectar con el ranking compartido (¿ya está la base de datos conectada en Vercel?).';
+    el.rankingList.appendChild(li);
+  }
+}
+
+function renderRanking(ranking) {
+  el.rankingList.innerHTML = '';
+  ranking.forEach(item => {
+    const li = document.createElement('li');
+    if (item.name === state.playerName && item.score === state.score) {
+      li.classList.add('you');
+    }
     li.innerHTML = `<span>${escapeHtml(item.name)}</span><span>${item.score} pts</span>`;
     el.rankingList.appendChild(li);
   });
-
-  showScreen('end');
 }
 
 el.playAgainBtn.addEventListener('click', () => {
