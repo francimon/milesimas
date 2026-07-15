@@ -80,7 +80,7 @@ label {
   margin-bottom: 8px;
 }
 
-textarea, input[type="text"], input[type="number"] {
+textarea, input[type="text"], input[type="number"], select {
   width: 100%;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -91,6 +91,9 @@ textarea, input[type="text"], input[type="number"] {
   padding: 12px 14px;
   resize: vertical;
 }
+
+#spotify-logged-in select { margin-bottom: 10px; }
+#spotify-logged-out .btn-secondary, #spotify-logged-in .btn-secondary { width: 100%; }
 
 textarea:focus, input:focus {
   outline: 2px solid var(--accent);

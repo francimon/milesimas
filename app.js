@@ -31,7 +31,9 @@ const state = {
   selectedGuessId: null,
   audioCtx: null,
   sessionRanking: [], // in-memory only, resets on reload — see note in UI
-  spotifyEntries: null, // filled in by the "Buscar" button, { name, artist }[]
+  spotifyEntries: null, // filled in after picking a playlist, { name, artist }[]
+  spotifyAccessToken: null,
+  spotifyPlaylists: [],
 };
 
 // ---------- DOM refs ----------
@@ -49,8 +51,11 @@ const el = {
   rounds: document.getElementById('rounds'),
   playerName: document.getElementById('player-name'),
   setupError: document.getElementById('setup-error'),
-  spotifyUrl: document.getElementById('spotify-url'),
-  fetchPlaylistBtn: document.getElementById('fetch-playlist-btn'),
+  spotifyLoggedOut: document.getElementById('spotify-logged-out'),
+  spotifyLoggedIn: document.getElementById('spotify-logged-in'),
+  spotifyLoginBtn: document.getElementById('spotify-login-btn'),
+  spotifyPlaylistSelect: document.getElementById('spotify-playlist-select'),
+  loadPlaylistBtn: document.getElementById('load-playlist-btn'),
   spotifyStatus: document.getElementById('spotify-status'),
 
   progressFill: document.getElementById('progress-fill'),
@@ -122,34 +127,156 @@ document.querySelectorAll('.tab').forEach(tab => {
   });
 });
 
-function extractPlaylistId(input) {
-  const match = input.match(/playlist[/:]([a-zA-Z0-9]+)/);
-  return match ? match[1] : input.trim();
+// ---------- Spotify login (Authorization Code + PKCE) ----------
+//
+// PKCE doesn't need a client secret, so this whole flow — including reading
+// the playlist's tracks — happens directly in the browser. Fill in your own
+// Client ID below (it's public info, safe to ship in client-side code), and
+// register SPOTIFY_REDIRECT_URI as a Redirect URI in your Spotify dashboard
+// (Settings) exactly as it appears once deployed.
+
+const SPOTIFY_CLIENT_ID = 'afef91a1d7be4f6eac409ef86eacb001'; // <- reemplazar
+const SPOTIFY_REDIRECT_URI = window.location.origin + window.location.pathname;
+const SPOTIFY_SCOPES = 'playlist-read-private playlist-read-collaborative';
+
+function base64UrlEncode(buffer) {
+  return btoa(String.fromCharCode(...new Uint8Array(buffer)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-el.fetchPlaylistBtn.addEventListener('click', async () => {
-  const raw = el.spotifyUrl.value.trim();
-  if (!raw) return;
+function generateRandomString(length) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const values = crypto.getRandomValues(new Uint8Array(length));
+  return Array.from(values).map(v => chars[v % chars.length]).join('');
+}
 
-  el.spotifyStatus.textContent = 'Buscando la playlist…';
-  el.fetchPlaylistBtn.disabled = true;
-  state.spotifyEntries = null;
+async function sha256(plain) {
+  return crypto.subtle.digest('SHA-256', new TextEncoder().encode(plain));
+}
+
+el.spotifyLoginBtn.addEventListener('click', async () => {
+  const verifier = generateRandomString(64);
+  const challenge = base64UrlEncode(await sha256(verifier));
+  const oauthState = generateRandomString(16);
+
+  // The redirect to Spotify is a full page navigation, so JS memory is lost —
+  // sessionStorage is what survives the round trip (this only runs once the
+  // site is deployed on a real https domain, not from a local file).
+  sessionStorage.setItem('spotify_verifier', verifier);
+  sessionStorage.setItem('spotify_oauth_state', oauthState);
+
+  const params = new URLSearchParams({
+    client_id: SPOTIFY_CLIENT_ID,
+    response_type: 'code',
+    redirect_uri: SPOTIFY_REDIRECT_URI,
+    code_challenge_method: 'S256',
+    code_challenge: challenge,
+    scope: SPOTIFY_SCOPES,
+    state: oauthState,
+  });
+  window.location.href = `https://accounts.spotify.com/authorize?${params.toString()}`;
+});
+
+async function handleSpotifyRedirect() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const code = urlParams.get('code');
+  if (!code) return;
+
+  const expectedState = sessionStorage.getItem('spotify_oauth_state');
+  const verifier = sessionStorage.getItem('spotify_verifier');
+  window.history.replaceState({}, '', window.location.pathname);
+
+  if (!verifier || urlParams.get('state') !== expectedState) {
+    el.spotifyStatus.textContent = 'No pudimos validar el login con Spotify, probá de nuevo.';
+    return;
+  }
+
+  el.spotifyStatus.textContent = 'Conectando con Spotify…';
+  try {
+    const tokenResp = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: SPOTIFY_CLIENT_ID,
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: SPOTIFY_REDIRECT_URI,
+        code_verifier: verifier,
+      }),
+    });
+    if (!tokenResp.ok) throw new Error('token-exchange-failed');
+    const tokenData = await tokenResp.json();
+    state.spotifyAccessToken = tokenData.access_token;
+    await loadSpotifyPlaylists();
+  } catch (err) {
+    console.error(err);
+    el.spotifyStatus.textContent = 'Falló la conexión con Spotify. Revisá que el Client ID y el Redirect URI coincidan con los de tu dashboard.';
+  }
+}
+
+async function fetchAllPages(url, token) {
+  let items = [];
+  let nextUrl = url;
+  while (nextUrl) {
+    const resp = await fetch(nextUrl, { headers: { Authorization: `Bearer ${token}` } });
+    if (!resp.ok) throw new Error('spotify-fetch-failed');
+    const data = await resp.json();
+    items = items.concat(data.items || []);
+    nextUrl = data.next;
+  }
+  return items;
+}
+
+async function loadSpotifyPlaylists() {
+  el.spotifyLoggedOut.hidden = true;
+  el.spotifyLoggedIn.hidden = false;
+  el.spotifyStatus.textContent = 'Cargando tus playlists…';
 
   try {
-    const id = extractPlaylistId(raw);
-    const resp = await fetch(`/api/playlist?playlistId=${encodeURIComponent(id)}`);
-    if (!resp.ok) throw new Error('bad-response');
-    const data = await resp.json();
-    if (!data.tracks || data.tracks.length === 0) throw new Error('empty');
-    state.spotifyEntries = data.tracks;
-    el.spotifyStatus.textContent = `${data.tracks.length} canciones encontradas.`;
+    const playlists = await fetchAllPages('https://api.spotify.com/v1/me/playlists?limit=50', state.spotifyAccessToken);
+    state.spotifyPlaylists = playlists;
+    el.spotifyPlaylistSelect.innerHTML = playlists
+      .map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`)
+      .join('');
+    el.spotifyStatus.textContent = playlists.length
+      ? `${playlists.length} playlists encontradas.`
+      : 'No encontramos playlists propias en tu cuenta.';
   } catch (err) {
+    console.error(err);
+    el.spotifyStatus.textContent = 'No pudimos cargar tus playlists.';
+  }
+}
+
+el.loadPlaylistBtn.addEventListener('click', async () => {
+  const playlistId = el.spotifyPlaylistSelect.value;
+  if (!playlistId) return;
+
+  el.spotifyStatus.textContent = 'Leyendo canciones de la playlist…';
+  el.loadPlaylistBtn.disabled = true;
+  try {
+    const rawItems = await fetchAllPages(
+      `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=50&fields=next,items(item(name,artists(name)))`,
+      state.spotifyAccessToken
+    );
+    const entries = rawItems
+      .map(entry => entry.item)
+      .filter(Boolean)
+      .map(item => ({ name: item.name, artist: (item.artists || []).map(a => a.name).join(', ') }));
+
+    state.spotifyEntries = entries;
+    el.spotifyStatus.textContent = entries.length
+      ? `${entries.length} canciones cargadas de la playlist.`
+      : 'Esta playlist no tiene canciones, o no sos dueño/colaborador de ella.';
+  } catch (err) {
+    console.error(err);
     state.spotifyEntries = null;
-    el.spotifyStatus.textContent = 'No pudimos leer la playlist. Esto solo funciona una vez desplegado en Vercel con las funciones activas — mientras tanto probá con la pestaña "Lista manual".';
+    el.spotifyStatus.textContent = 'No pudimos leer esta playlist (¿sos dueño o colaborador?).';
   } finally {
-    el.fetchPlaylistBtn.disabled = false;
+    el.loadPlaylistBtn.disabled = false;
   }
 });
+
+handleSpotifyRedirect();
 
 function getSelectedTrackEntries() {
   const activeTab = document.querySelector('.tab.active').dataset.tab;

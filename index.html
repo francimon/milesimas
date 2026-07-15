@@ -28,12 +28,16 @@
         </div>
 
         <div class="tab-panel" id="tab-spotify" data-panel>
-          <label for="spotify-url">Link de la playlist</label>
-          <div class="spotify-fetch-row">
-            <input type="text" id="spotify-url" placeholder="https://open.spotify.com/playlist/...">
-            <button type="button" id="fetch-playlist-btn" class="btn-secondary">Buscar</button>
+          <div id="spotify-logged-out">
+            <p class="hint">Iniciá sesión con Spotify para elegir una de tus propias playlists. Por las reglas nuevas de Spotify, solo funciona con playlists que vos creaste o donde colaborás.</p>
+            <button type="button" id="spotify-login-btn" class="btn-secondary">Conectar con Spotify</button>
           </div>
-          <p class="hint" id="spotify-status">Pegá el link de una playlist pública de Spotify.</p>
+          <div id="spotify-logged-in" hidden>
+            <label for="spotify-playlist-select">Tu playlist</label>
+            <select id="spotify-playlist-select"></select>
+            <button type="button" id="load-playlist-btn" class="btn-secondary">Cargar canciones</button>
+          </div>
+          <p class="hint" id="spotify-status"></p>
         </div>
 
         <div class="tab-panel" id="tab-manual" data-panel hidden>
