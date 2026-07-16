@@ -13,6 +13,7 @@ const SCORES = {
 };
 
 const WAVEFORM_BARS = 48;
+const PARTY_POOL_CAP = 60; // max songs resolved into a party's shared pool
 
 // ---------- State ----------
 
@@ -155,7 +156,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 // register SPOTIFY_REDIRECT_URI as a Redirect URI in your Spotify dashboard
 // (Settings) exactly as it appears once deployed.
 
-const SPOTIFY_CLIENT_ID = 'afef91a1d7be4f6eac409ef86eacb001'; // <- reemplazar
+const SPOTIFY_CLIENT_ID = 'afef91a1d7be4f6eac409ef86eacb001';
 const SPOTIFY_REDIRECT_URI = window.location.origin + window.location.pathname;
 const SPOTIFY_SCOPES = 'playlist-read-private playlist-read-collaborative';
 
@@ -812,47 +813,78 @@ el.createPartyBtn.addEventListener('click', async () => {
   if (!name) return showSetupError('Ingresá tu nombre.');
 
   state.difficulty = el.setupForm.querySelector('input[name="difficulty"]:checked').value;
-  state.totalRounds = rounds;
   state.playerName = name;
   getAudioCtx();
 
+  // Resolve a big shared pool (not just this player's rounds) so it can be
+  // split into non-overlapping chunks as people join.
+  const poolTarget = Math.min(entries.length, PARTY_POOL_CAP);
   showScreen('loading');
-  await loadLibrary(entries, rounds);
+  await loadLibrary(entries, poolTarget);
 
   if (state.library.length === 0) {
     showScreen('setup');
     return showSetupError('No encontramos audio para ninguna de esas canciones. Probá con otros nombres.');
   }
-  state.totalRounds = Math.min(rounds, state.library.length);
+  if (state.library.length < rounds) {
+    showScreen('setup');
+    return showSetupError(`Solo encontramos audio para ${state.library.length} canciones, y pediste ${rounds} por jugador. Bajá la "Cantidad de canciones" o probá con una playlist más grande.`);
+  }
 
-  // Fix each track's clip now, once, so every party member hears exactly the same fragment.
+  // Fix each track's clip now, once — everyone who plays this song (whoever
+  // ends up with it in their chunk) hears the exact same fragment.
   const maxDurationSec = DURATIONS_MS[state.difficulty][2] / 1000;
   state.library.forEach(track => {
     const dur = track.audioBuffer.duration;
     track.fixedOffsetSec = dur > maxDurationSec + 1 ? Math.random() * (dur - maxDurationSec - 1) : 0;
   });
 
+  const fullPool = state.library;
+
   try {
-    const resp = await fetch('/api/party', {
+    const createResp = await fetch('/api/party', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        entries: state.library.map(t => ({
+        pool: fullPool.map(t => ({
           name: t.name,
           artist: t.artist,
           previewUrl: t.previewUrl,
           startOffsetSec: t.fixedOffsetSec,
         })),
         difficulty: state.difficulty,
-        rounds: state.totalRounds,
+        rounds,
       }),
     });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data.error || `Error ${resp.status} del servidor`);
+    const createData = await createResp.json().catch(() => ({}));
+    if (!createResp.ok) throw new Error(createData.error || `Error ${createResp.status} del servidor`);
 
-    state.partyCode = data.code;
-    el.partyShareLink.value = partyShareUrl(data.code);
-    el.partyShareCode.textContent = data.code;
+    state.partyCode = createData.code;
+    el.partyShareLink.value = partyShareUrl(createData.code);
+    el.partyShareCode.textContent = createData.code;
+
+    // Claim your own chunk from the pool, exactly like any other joiner would.
+    const joinResp = await fetch(`/api/party?code=${createData.code}&action=join`, { method: 'POST' });
+    const joinData = await joinResp.json().catch(() => ({}));
+    if (!joinResp.ok) throw new Error(joinData.error || `Error ${joinResp.status} del servidor`);
+
+    // The audio is already decoded locally from resolving the pool — just match it up.
+    state.library = joinData.entries
+      .map((e, i) => {
+        const resolved = fullPool.find(t => t.previewUrl === e.previewUrl);
+        if (!resolved) return null;
+        return {
+          id: `t${i}`,
+          name: e.name,
+          artist: e.artist,
+          previewUrl: e.previewUrl,
+          audioBuffer: resolved.audioBuffer,
+          fixedOffsetSec: e.startOffsetSec,
+        };
+      })
+      .filter(Boolean);
+    state.totalRounds = state.library.length;
+
     showScreen('partyCreated');
   } catch (err) {
     console.error(err);
@@ -903,24 +935,22 @@ el.joinPartyBtn.addEventListener('click', async () => {
   getAudioCtx();
 
   try {
-    const resp = await fetch(`/api/party?code=${state.pendingPartyCode}`);
-    const data0 = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data0.error || `Error ${resp.status} del servidor`);
-    const data = data0;
-    const config = data.config;
+    const resp = await fetch(`/api/party?code=${state.pendingPartyCode}&action=join`, { method: 'POST' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || `Error ${resp.status} del servidor`);
 
     state.playerName = name;
-    state.difficulty = config.difficulty;
+    state.difficulty = data.difficulty;
     state.partyCode = state.pendingPartyCode;
 
     showScreen('loading');
     el.loadingLog.innerHTML = '';
-    el.progressCount.textContent = `0 / ${config.entries.length}`;
+    el.progressCount.textContent = `0 / ${data.entries.length}`;
     el.progressFill.style.width = '0%';
     state.library = [];
 
-    for (let i = 0; i < config.entries.length; i++) {
-      const item = config.entries[i];
+    for (let i = 0; i < data.entries.length; i++) {
+      const item = data.entries[i];
       try {
         const audioBuffer = await decodeBuffer(item.previewUrl);
         state.library.push({
@@ -936,8 +966,8 @@ el.joinPartyBtn.addEventListener('click', async () => {
         console.error('No se pudo decodificar', item, err);
         logLoadingAttempt(item, null, 'not-found');
       }
-      el.progressCount.textContent = `${i + 1} / ${config.entries.length}`;
-      el.progressFill.style.width = `${((i + 1) / config.entries.length) * 100}%`;
+      el.progressCount.textContent = `${i + 1} / ${data.entries.length}`;
+      el.progressFill.style.width = `${((i + 1) / data.entries.length) * 100}%`;
     }
 
     if (state.library.length === 0) {
