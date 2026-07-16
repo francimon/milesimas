@@ -36,6 +36,8 @@ const state = {
   spotifyPlaylists: [],
   partyCode: null,        // set once you're playing inside a party
   pendingPartyCode: null, // set while the join banner is showing, before you hit "join"
+  lives: Infinity,        // max lives for the current game (Infinity = unlimited, solo default)
+  livesRemaining: Infinity,
 };
 
 // ---------- DOM refs ----------
@@ -59,14 +61,15 @@ const el = {
   spotifyLoginBtn: document.getElementById('spotify-login-btn'),
   spotifyPlaylistSelect: document.getElementById('spotify-playlist-select'),
   loadPlaylistBtn: document.getElementById('load-playlist-btn'),
-  spotifyOtherUrl: document.getElementById('spotify-other-url'),
-  loadOtherPlaylistBtn: document.getElementById('load-other-playlist-btn'),
   spotifyStatus: document.getElementById('spotify-status'),
   viewRankingBtn: document.getElementById('view-ranking-btn'),
   setupRankingList: document.getElementById('setup-ranking-list'),
+  resetRankingBtn: document.getElementById('reset-ranking-btn'),
+  resetRankingStatus: document.getElementById('reset-ranking-status'),
 
   loadingLog: document.getElementById('loading-log'),
 
+  partyLives: document.getElementById('party-lives'),
   partyJoinBanner: document.getElementById('party-join-banner'),
   partyCodeLabel: document.getElementById('party-code-label'),
   partyPlayerName: document.getElementById('party-player-name'),
@@ -77,12 +80,14 @@ const el = {
   partyShareCode: document.getElementById('party-share-code'),
   copyPartyLinkBtn: document.getElementById('copy-party-link-btn'),
   startPartyGameBtn: document.getElementById('start-party-game-btn'),
+  partyCreatedError: document.getElementById('party-created-error'),
   refreshPartyRankingBtn: document.getElementById('refresh-party-ranking-btn'),
 
   progressFill: document.getElementById('progress-fill'),
   progressCount: document.getElementById('progress-count'),
 
   roundCounter: document.getElementById('round-counter'),
+  livesDisplay: document.getElementById('lives-display'),
   scoreDisplay: document.getElementById('score-display'),
   waveform: document.getElementById('waveform'),
   tierReadout: document.getElementById('tier-readout'),
@@ -268,11 +273,6 @@ async function loadSpotifyPlaylists() {
   }
 }
 
-function extractPlaylistId(input) {
-  const match = input.match(/playlist[/:]([a-zA-Z0-9]+)/);
-  return match ? match[1] : input.trim();
-}
-
 async function loadPlaylistTracks(playlistId, triggerBtn) {
   if (!playlistId) return;
   el.spotifyStatus.textContent = 'Leyendo canciones de la playlist…';
@@ -303,12 +303,6 @@ async function loadPlaylistTracks(playlistId, triggerBtn) {
 
 el.loadPlaylistBtn.addEventListener('click', () => {
   loadPlaylistTracks(el.spotifyPlaylistSelect.value, el.loadPlaylistBtn);
-});
-
-el.loadOtherPlaylistBtn.addEventListener('click', () => {
-  const raw = el.spotifyOtherUrl.value.trim();
-  if (!raw) return;
-  loadPlaylistTracks(extractPlaylistId(raw), el.loadOtherPlaylistBtn);
 });
 
 handleSpotifyRedirect();
@@ -361,6 +355,9 @@ el.setupForm.addEventListener('submit', async (e) => {
   state.difficulty = el.setupForm.querySelector('input[name="difficulty"]:checked').value;
   state.totalRounds = rounds;
   state.playerName = name;
+  state.lives = Infinity;
+  state.livesRemaining = Infinity;
+  state.partyCode = null;
 
   // Creating the AudioContext here, inside a real click/submit, keeps browsers happy
   getAudioCtx();
@@ -390,9 +387,14 @@ function showSetupError(msg) {
 
 el.viewRankingBtn.addEventListener('click', async () => {
   const list = el.setupRankingList;
-  if (!list.hidden) { list.hidden = true; return; }
+  if (!list.hidden) {
+    list.hidden = true;
+    el.resetRankingBtn.hidden = true;
+    return;
+  }
 
   list.hidden = false;
+  el.resetRankingBtn.hidden = false;
   list.innerHTML = '<li>Cargando…</li>';
   try {
     const resp = await fetch('/api/ranking');
@@ -411,6 +413,23 @@ el.viewRankingBtn.addEventListener('click', async () => {
   } catch (err) {
     console.error(err);
     list.innerHTML = '<li>No pudimos cargar el ranking.</li>';
+  }
+});
+
+el.resetRankingBtn.addEventListener('click', async () => {
+  el.resetRankingStatus.textContent = 'Reiniciando…';
+  el.resetRankingBtn.disabled = true;
+  try {
+    const resp = await fetch('/api/ranking', { method: 'DELETE' });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || `Error ${resp.status} del servidor`);
+    el.resetRankingStatus.textContent = 'Ranking reiniciado.';
+    el.setupRankingList.innerHTML = '<li>Todavía no hay puntajes guardados.</li>';
+  } catch (err) {
+    console.error(err);
+    el.resetRankingStatus.textContent = err.message;
+  } finally {
+    el.resetRankingBtn.disabled = false;
   }
 });
 
@@ -563,6 +582,7 @@ function startRound() {
 function updateHud() {
   el.roundCounter.textContent = `Canción ${state.roundIndex + 1} de ${state.totalRounds}`;
   el.scoreDisplay.textContent = `${state.score} pts`;
+  el.livesDisplay.textContent = (state.lives === Infinity) ? '' : `${'♥'.repeat(Math.max(0, state.livesRemaining))}`;
   el.tierReadout.textContent = `${(DURATIONS_MS[state.difficulty][state.currentTier] / 1000).toFixed(3)}s`;
   updateWaveformReveal();
 }
@@ -704,7 +724,17 @@ function resolveRound(correct) {
   } else {
     el.feedback.textContent = `Era "${state.currentTrack.name} — ${state.currentTrack.artist}"`;
     el.feedback.className = 'feedback wrong';
-    setTimeout(advanceToNextRoundOrTrack, 1400);
+
+    if (state.livesRemaining !== Infinity) {
+      state.livesRemaining -= 1;
+      updateHud();
+    }
+
+    if (state.livesRemaining <= 0) {
+      setTimeout(endGame, 1400);
+    } else {
+      setTimeout(advanceToNextRoundOrTrack, 1400);
+    }
   }
 }
 
@@ -773,13 +803,17 @@ el.refreshPartyRankingBtn.addEventListener('click', async () => {
   }
 });
 
-el.playAgainBtn.addEventListener('click', () => {
-  // Inside a party, "play again" replays the exact same room so you can try to beat your score.
-  if (state.partyCode && state.library.length > 0) {
-    state.roundIndex = 0;
-    state.score = 0;
-    state.playedIds = [];
-    startRound();
+el.playAgainBtn.addEventListener('click', async () => {
+  // Inside a party, "play again" claims a brand new chunk from the shared
+  // pool — never the same songs twice in a row.
+  if (state.partyCode) {
+    try {
+      await claimPartyChunkAndPlay(state.partyCode);
+    } catch (err) {
+      console.error(err);
+      showScreen('setup');
+      showSetupError(`No pudimos conseguir canciones nuevas para la party: ${err.message}`);
+    }
   } else {
     showScreen('setup');
   }
@@ -801,6 +835,8 @@ el.createPartyBtn.addEventListener('click', async () => {
   const entries = getSelectedTrackEntries();
   const rounds = parseInt(el.rounds.value, 10) || 1;
   const name = el.playerName.value.trim();
+  const livesInput = parseInt(el.partyLives.value, 10);
+  const lives = (Number.isFinite(livesInput) && livesInput > 0) ? livesInput : null; // null = unlimited
 
   if (entries.length === 0) {
     const activeTab = document.querySelector('.tab.active').dataset.tab;
@@ -839,14 +875,12 @@ el.createPartyBtn.addEventListener('click', async () => {
     track.fixedOffsetSec = dur > maxDurationSec + 1 ? Math.random() * (dur - maxDurationSec - 1) : 0;
   });
 
-  const fullPool = state.library;
-
   try {
     const createResp = await fetch('/api/party', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        pool: fullPool.map(t => ({
+        pool: state.library.map(t => ({
           name: t.name,
           artist: t.artist,
           previewUrl: t.previewUrl,
@@ -854,6 +888,7 @@ el.createPartyBtn.addEventListener('click', async () => {
         })),
         difficulty: state.difficulty,
         rounds,
+        lives,
       }),
     });
     const createData = await createResp.json().catch(() => ({}));
@@ -862,29 +897,7 @@ el.createPartyBtn.addEventListener('click', async () => {
     state.partyCode = createData.code;
     el.partyShareLink.value = partyShareUrl(createData.code);
     el.partyShareCode.textContent = createData.code;
-
-    // Claim your own chunk from the pool, exactly like any other joiner would.
-    const joinResp = await fetch(`/api/party?code=${createData.code}&action=join`, { method: 'POST' });
-    const joinData = await joinResp.json().catch(() => ({}));
-    if (!joinResp.ok) throw new Error(joinData.error || `Error ${joinResp.status} del servidor`);
-
-    // The audio is already decoded locally from resolving the pool — just match it up.
-    state.library = joinData.entries
-      .map((e, i) => {
-        const resolved = fullPool.find(t => t.previewUrl === e.previewUrl);
-        if (!resolved) return null;
-        return {
-          id: `t${i}`,
-          name: e.name,
-          artist: e.artist,
-          previewUrl: e.previewUrl,
-          audioBuffer: resolved.audioBuffer,
-          fixedOffsetSec: e.startOffsetSec,
-        };
-      })
-      .filter(Boolean);
-    state.totalRounds = state.library.length;
-
+    el.partyCreatedError.hidden = true;
     showScreen('partyCreated');
   } catch (err) {
     console.error(err);
@@ -905,11 +918,70 @@ el.copyPartyLinkBtn.addEventListener('click', async () => {
   }
 });
 
-el.startPartyGameBtn.addEventListener('click', () => {
+// Claims a fresh, non-overlapping chunk of songs from a party's shared pool
+// and starts playing it. Used for the first join AND every replay, so nobody
+// ever gets the same set of songs twice in a row.
+async function claimPartyChunkAndPlay(code, statusEl) {
+  const resp = await fetch(`/api/party?code=${code}&action=join`, { method: 'POST' });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || `Error ${resp.status} del servidor`);
+
+  state.partyCode = code;
+  state.difficulty = data.difficulty;
+  state.lives = (data.lives == null) ? Infinity : data.lives;
+  state.livesRemaining = state.lives;
+
+  showScreen('loading');
+  el.loadingLog.innerHTML = '';
+  el.progressCount.textContent = `0 / ${data.entries.length}`;
+  el.progressFill.style.width = '0%';
+  state.library = [];
+
+  for (let i = 0; i < data.entries.length; i++) {
+    const item = data.entries[i];
+    try {
+      const audioBuffer = await decodeBuffer(item.previewUrl);
+      state.library.push({
+        id: `t${i}`,
+        name: item.name,
+        artist: item.artist,
+        previewUrl: item.previewUrl,
+        fixedOffsetSec: item.startOffsetSec,
+        audioBuffer,
+      });
+      logLoadingAttempt(item, null, 'ok');
+    } catch (err) {
+      console.error('No se pudo decodificar', item, err);
+      logLoadingAttempt(item, null, 'not-found');
+    }
+    el.progressCount.textContent = `${i + 1} / ${data.entries.length}`;
+    el.progressFill.style.width = `${((i + 1) / data.entries.length) * 100}%`;
+  }
+
+  if (state.library.length === 0) {
+    throw new Error('No pudimos cargar el audio de esta party.');
+  }
+
+  state.totalRounds = state.library.length;
   state.roundIndex = 0;
   state.score = 0;
   state.playedIds = [];
   startRound();
+}
+
+el.startPartyGameBtn.addEventListener('click', async () => {
+  el.partyCreatedError.hidden = true;
+  el.startPartyGameBtn.disabled = true;
+  try {
+    await claimPartyChunkAndPlay(state.partyCode);
+  } catch (err) {
+    console.error(err);
+    el.partyCreatedError.textContent = `No pudimos empezar: ${err.message}`;
+    el.partyCreatedError.hidden = false;
+    showScreen('partyCreated');
+  } finally {
+    el.startPartyGameBtn.disabled = false;
+  }
 });
 
 function detectPartyFromUrl() {
@@ -933,56 +1005,13 @@ el.joinPartyBtn.addEventListener('click', async () => {
   el.partyJoinStatus.textContent = 'Cargando la party…';
   el.joinPartyBtn.disabled = true;
   getAudioCtx();
+  state.playerName = name;
 
   try {
-    const resp = await fetch(`/api/party?code=${state.pendingPartyCode}&action=join`, { method: 'POST' });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(data.error || `Error ${resp.status} del servidor`);
-
-    state.playerName = name;
-    state.difficulty = data.difficulty;
-    state.partyCode = state.pendingPartyCode;
-
-    showScreen('loading');
-    el.loadingLog.innerHTML = '';
-    el.progressCount.textContent = `0 / ${data.entries.length}`;
-    el.progressFill.style.width = '0%';
-    state.library = [];
-
-    for (let i = 0; i < data.entries.length; i++) {
-      const item = data.entries[i];
-      try {
-        const audioBuffer = await decodeBuffer(item.previewUrl);
-        state.library.push({
-          id: `t${i}`,
-          name: item.name,
-          artist: item.artist,
-          previewUrl: item.previewUrl,
-          fixedOffsetSec: item.startOffsetSec,
-          audioBuffer,
-        });
-        logLoadingAttempt(item, null, 'ok');
-      } catch (err) {
-        console.error('No se pudo decodificar', item, err);
-        logLoadingAttempt(item, null, 'not-found');
-      }
-      el.progressCount.textContent = `${i + 1} / ${data.entries.length}`;
-      el.progressFill.style.width = `${((i + 1) / data.entries.length) * 100}%`;
-    }
-
-    if (state.library.length === 0) {
-      showScreen('setup');
-      el.partyJoinStatus.textContent = 'No pudimos cargar el audio de esta party.';
-      return;
-    }
-
-    state.totalRounds = state.library.length;
-    state.roundIndex = 0;
-    state.score = 0;
-    state.playedIds = [];
-    startRound();
+    await claimPartyChunkAndPlay(state.pendingPartyCode);
   } catch (err) {
     console.error(err);
+    showScreen('setup');
     el.partyJoinStatus.textContent = `No pudimos unirte a la party: ${err.message}`;
   } finally {
     el.joinPartyBtn.disabled = false;
