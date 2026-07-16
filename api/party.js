@@ -1,7 +1,10 @@
-// Vercel serverless function — party rooms.
-// POST (no ?code)  -> creates a party, returns { code }
-// GET  ?code=XXXXX -> returns { config, ranking }
-// POST ?code=XXXXX -> submits a score, returns { ranking }
+// Vercel serverless function — party rooms with a shared song pool.
+//
+// POST  (no ?code)              -> creates a party with a big shared pool, returns { code }
+// POST  ?code=XXXXX&action=join -> atomically claims the next chunk of songs from
+//                                  the pool for this player, returns { entries, difficulty }
+// GET   ?code=XXXXX             -> returns just the ranking (used by "actualizar")
+// POST  ?code=XXXXX             -> submits a score, returns { ranking }
 //
 // Parties expire after 24h (TTL in Redis) so old rooms don't pile up forever.
 
@@ -23,22 +26,27 @@ function generateCode() {
 
 module.exports = async (req, res) => {
   const code = (req.query.code || '').toString().toUpperCase();
+  const action = (req.query.action || '').toString();
 
   // ---- Create a party ----
   if (req.method === 'POST' && !code) {
-    const { entries, difficulty, rounds } = req.body || {};
-    if (!Array.isArray(entries) || entries.length === 0) {
+    const { pool, difficulty, rounds } = req.body || {};
+    if (!Array.isArray(pool) || pool.length === 0) {
       res.status(400).json({ error: 'Faltan canciones para crear la party' });
+      return;
+    }
+    if (!rounds || rounds < 1) {
+      res.status(400).json({ error: 'Falta la cantidad de canciones por jugador' });
       return;
     }
 
     const newCode = generateCode();
     await redis.set(
       `party:${newCode}:config`,
-      { entries, difficulty, rounds, createdAt: Date.now() },
+      { pool, difficulty, rounds, createdAt: Date.now() },
       { ex: TTL_SECONDS }
     );
-    res.status(200).json({ code: newCode });
+    res.status(200).json({ code: newCode, poolSize: pool.length });
     return;
   }
 
@@ -47,7 +55,38 @@ module.exports = async (req, res) => {
     return;
   }
 
-  // ---- Join / view a party ----
+  // ---- Join: atomically claim the next chunk of songs from the shared pool ----
+  if (req.method === 'POST' && action === 'join') {
+    const config = await redis.get(`party:${code}:config`);
+    if (!config) {
+      res.status(404).json({ error: 'Party no encontrada o vencida' });
+      return;
+    }
+
+    const rounds = config.rounds;
+    const poolSize = config.pool.length;
+    const claimedKey = `party:${code}:claimed`;
+
+    // INCRBY is atomic in Redis, so two people joining at the same instant
+    // still get different, non-overlapping ranges.
+    const newCount = await redis.incrby(claimedKey, rounds);
+    await redis.expire(claimedKey, TTL_SECONDS);
+
+    const startIdx = (newCount - rounds) % poolSize;
+    const entries = [];
+    for (let i = 0; i < rounds; i++) {
+      entries.push(config.pool[(startIdx + i) % poolSize]);
+    }
+
+    res.status(200).json({
+      entries,
+      difficulty: config.difficulty,
+      recycled: newCount > poolSize, // true once the pool has wrapped around
+    });
+    return;
+  }
+
+  // ---- View the ranking only (used by the "actualizar" refresh button) ----
   if (req.method === 'GET') {
     const config = await redis.get(`party:${code}:config`);
     if (!config) {
@@ -55,11 +94,11 @@ module.exports = async (req, res) => {
       return;
     }
     const ranking = (await redis.get(`party:${code}:ranking`)) || [];
-    res.status(200).json({ config, ranking: ranking.slice(0, RETURNED_ENTRIES) });
+    res.status(200).json({ ranking: ranking.slice(0, RETURNED_ENTRIES) });
     return;
   }
 
-  // ---- Submit a score ----
+  // ---- Submit a score (keeps each player's best attempt) ----
   if (req.method === 'POST') {
     const { name, score } = req.body || {};
     if (typeof name !== 'string' || !name.trim() || typeof score !== 'number') {
@@ -76,7 +115,6 @@ module.exports = async (req, res) => {
     const cleanName = name.trim().slice(0, 24);
     const current = (await redis.get(`party:${code}:ranking`)) || [];
 
-    // Keep each player's best score, not every attempt.
     const idx = current.findIndex(e => e.name === cleanName);
     const candidate = { name: cleanName, score, date: new Date().toISOString() };
     if (idx >= 0) {
