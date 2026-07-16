@@ -2,7 +2,7 @@
 //
 // POST  (no ?code)              -> creates a party with a big shared pool, returns { code }
 // POST  ?code=XXXXX&action=join -> atomically claims the next chunk of songs from
-//                                  the pool for this player, returns { entries, difficulty }
+//                                  the pool for this player, returns { entries, difficulty, lives }
 // GET   ?code=XXXXX             -> returns just the ranking (used by "actualizar")
 // POST  ?code=XXXXX             -> submits a score, returns { ranking }
 //
@@ -30,7 +30,7 @@ module.exports = async (req, res) => {
 
   // ---- Create a party ----
   if (req.method === 'POST' && !code) {
-    const { pool, difficulty, rounds } = req.body || {};
+    const { pool, difficulty, rounds, lives } = req.body || {};
     if (!Array.isArray(pool) || pool.length === 0) {
       res.status(400).json({ error: 'Faltan canciones para crear la party' });
       return;
@@ -40,10 +40,12 @@ module.exports = async (req, res) => {
       return;
     }
 
+    const cleanLives = (typeof lives === 'number' && lives > 0) ? lives : null; // null = unlimited
+
     const newCode = generateCode();
     await redis.set(
       `party:${newCode}:config`,
-      { pool, difficulty, rounds, createdAt: Date.now() },
+      { pool, difficulty, rounds, lives: cleanLives, createdAt: Date.now() },
       { ex: TTL_SECONDS }
     );
     res.status(200).json({ code: newCode, poolSize: pool.length });
@@ -81,6 +83,7 @@ module.exports = async (req, res) => {
     res.status(200).json({
       entries,
       difficulty: config.difficulty,
+      lives: config.lives, // null means unlimited
       recycled: newCount > poolSize, // true once the pool has wrapped around
     });
     return;
