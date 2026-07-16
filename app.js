@@ -36,8 +36,8 @@ const state = {
   spotifyPlaylists: [],
   partyCode: null,        // set once you're playing inside a party
   pendingPartyCode: null, // set while the join banner is showing, before you hit "join"
-  lives: Infinity,        // max lives for the current game (Infinity = unlimited, solo default)
-  livesRemaining: Infinity,
+  partyLivesMax: null,    // max total plays allowed per person in this party (null = unlimited)
+  partyLivesUsed: 0,      // how many of those this person has used so far
 };
 
 // ---------- DOM refs ----------
@@ -69,6 +69,7 @@ const el = {
 
   loadingLog: document.getElementById('loading-log'),
 
+  partyRounds: document.getElementById('party-rounds'),
   partyLives: document.getElementById('party-lives'),
   partyJoinBanner: document.getElementById('party-join-banner'),
   partyCodeLabel: document.getElementById('party-code-label'),
@@ -82,12 +83,12 @@ const el = {
   startPartyGameBtn: document.getElementById('start-party-game-btn'),
   partyCreatedError: document.getElementById('party-created-error'),
   refreshPartyRankingBtn: document.getElementById('refresh-party-ranking-btn'),
+  partyLivesHint: document.getElementById('party-lives-hint'),
 
   progressFill: document.getElementById('progress-fill'),
   progressCount: document.getElementById('progress-count'),
 
   roundCounter: document.getElementById('round-counter'),
-  livesDisplay: document.getElementById('lives-display'),
   scoreDisplay: document.getElementById('score-display'),
   waveform: document.getElementById('waveform'),
   tierReadout: document.getElementById('tier-readout'),
@@ -355,8 +356,6 @@ el.setupForm.addEventListener('submit', async (e) => {
   state.difficulty = el.setupForm.querySelector('input[name="difficulty"]:checked').value;
   state.totalRounds = rounds;
   state.playerName = name;
-  state.lives = Infinity;
-  state.livesRemaining = Infinity;
   state.partyCode = null;
 
   // Creating the AudioContext here, inside a real click/submit, keeps browsers happy
@@ -582,7 +581,6 @@ function startRound() {
 function updateHud() {
   el.roundCounter.textContent = `Canción ${state.roundIndex + 1} de ${state.totalRounds}`;
   el.scoreDisplay.textContent = `${state.score} pts`;
-  el.livesDisplay.textContent = (state.lives === Infinity) ? '' : `${'♥'.repeat(Math.max(0, state.livesRemaining))}`;
   el.tierReadout.textContent = `${(DURATIONS_MS[state.difficulty][state.currentTier] / 1000).toFixed(3)}s`;
   updateWaveformReveal();
 }
@@ -724,17 +722,7 @@ function resolveRound(correct) {
   } else {
     el.feedback.textContent = `Era "${state.currentTrack.name} — ${state.currentTrack.artist}"`;
     el.feedback.className = 'feedback wrong';
-
-    if (state.livesRemaining !== Infinity) {
-      state.livesRemaining -= 1;
-      updateHud();
-    }
-
-    if (state.livesRemaining <= 0) {
-      setTimeout(endGame, 1400);
-    } else {
-      setTimeout(advanceToNextRoundOrTrack, 1400);
-    }
+    setTimeout(advanceToNextRoundOrTrack, 1400);
   }
 }
 
@@ -754,6 +742,20 @@ async function endGame() {
   el.endScore.textContent = state.score;
   el.rankingList.innerHTML = '<li>Guardando puntaje…</li>';
   el.refreshPartyRankingBtn.hidden = !state.partyCode;
+
+  if (state.partyCode && state.partyLivesMax != null) {
+    const remaining = state.partyLivesMax - state.partyLivesUsed;
+    el.partyLivesHint.textContent = remaining > 0
+      ? `Te quedan ${remaining} intento${remaining === 1 ? '' : 's'} en esta party.`
+      : 'Ya usaste todos tus intentos en esta party.';
+    el.playAgainBtn.disabled = remaining <= 0;
+    el.playAgainBtn.textContent = remaining <= 0 ? 'Sin intentos restantes' : 'Jugar de nuevo';
+  } else {
+    el.partyLivesHint.textContent = '';
+    el.playAgainBtn.disabled = false;
+    el.playAgainBtn.textContent = 'Jugar de nuevo';
+  }
+
   showScreen('end');
 
   const endpoint = state.partyCode ? `/api/party?code=${state.partyCode}` : '/api/ranking';
@@ -833,10 +835,10 @@ el.createPartyBtn.addEventListener('click', async () => {
   el.setupError.hidden = true;
 
   const entries = getSelectedTrackEntries();
-  const rounds = parseInt(el.rounds.value, 10) || 1;
+  const rounds = parseInt(el.partyRounds.value, 10) || 1;
   const name = el.playerName.value.trim();
   const livesInput = parseInt(el.partyLives.value, 10);
-  const lives = (Number.isFinite(livesInput) && livesInput > 0) ? livesInput : null; // null = unlimited
+  const lives = (Number.isFinite(livesInput) && livesInput > 0) ? livesInput : null; // null = sin límite de intentos
 
   if (entries.length === 0) {
     const activeTab = document.querySelector('.tab.active').dataset.tab;
@@ -921,15 +923,19 @@ el.copyPartyLinkBtn.addEventListener('click', async () => {
 // Claims a fresh, non-overlapping chunk of songs from a party's shared pool
 // and starts playing it. Used for the first join AND every replay, so nobody
 // ever gets the same set of songs twice in a row.
-async function claimPartyChunkAndPlay(code, statusEl) {
-  const resp = await fetch(`/api/party?code=${code}&action=join`, { method: 'POST' });
+async function claimPartyChunkAndPlay(code) {
+  const resp = await fetch(`/api/party?code=${code}&action=join`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: state.playerName }),
+  });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(data.error || `Error ${resp.status} del servidor`);
 
   state.partyCode = code;
   state.difficulty = data.difficulty;
-  state.lives = (data.lives == null) ? Infinity : data.lives;
-  state.livesRemaining = state.lives;
+  state.partyLivesMax = data.livesMax; // null = sin límite
+  state.partyLivesUsed = data.livesUsed || 0;
 
   showScreen('loading');
   el.loadingLog.innerHTML = '';
