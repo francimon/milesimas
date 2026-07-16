@@ -155,7 +155,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 // register SPOTIFY_REDIRECT_URI as a Redirect URI in your Spotify dashboard
 // (Settings) exactly as it appears once deployed.
 
-const SPOTIFY_CLIENT_ID = 'afef91a1d7be4f6eac409ef86eacb001'; // <- reemplazar
+const SPOTIFY_CLIENT_ID = 'TU_CLIENT_ID_DE_SPOTIFY'; // <- reemplazar
 const SPOTIFY_REDIRECT_URI = window.location.origin + window.location.pathname;
 const SPOTIFY_SCOPES = 'playlist-read-private playlist-read-collaborative';
 
@@ -736,14 +736,14 @@ async function endGame() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!resp.ok) throw new Error('ranking-post-failed');
-    const data = await resp.json();
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || `Error ${resp.status} del servidor`);
     renderRanking(data.ranking);
   } catch (err) {
     console.error(err);
     el.rankingList.innerHTML = '';
     const li = document.createElement('li');
-    li.textContent = 'No pudimos conectar con el ranking compartido (¿ya está la base de datos conectada en Vercel?).';
+    li.textContent = `No pudimos guardar el puntaje: ${err.message}`;
     el.rankingList.appendChild(li);
   }
 }
@@ -847,8 +847,8 @@ el.createPartyBtn.addEventListener('click', async () => {
         rounds: state.totalRounds,
       }),
     });
-    if (!resp.ok) throw new Error('party-create-failed');
-    const data = await resp.json();
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || `Error ${resp.status} del servidor`);
 
     state.partyCode = data.code;
     el.partyShareLink.value = partyShareUrl(data.code);
@@ -857,7 +857,7 @@ el.createPartyBtn.addEventListener('click', async () => {
   } catch (err) {
     console.error(err);
     showScreen('setup');
-    showSetupError('No pudimos crear la party (¿ya conectaste la base de datos Redis en Vercel?).');
+    showSetupError(`No pudimos crear la party: ${err.message}`);
   }
 });
 
@@ -904,8 +904,9 @@ el.joinPartyBtn.addEventListener('click', async () => {
 
   try {
     const resp = await fetch(`/api/party?code=${state.pendingPartyCode}`);
-    if (!resp.ok) throw new Error('party-not-found');
-    const data = await resp.json();
+    const data0 = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data0.error || `Error ${resp.status} del servidor`);
+    const data = data0;
     const config = data.config;
 
     state.playerName = name;
@@ -952,7 +953,7 @@ el.joinPartyBtn.addEventListener('click', async () => {
     startRound();
   } catch (err) {
     console.error(err);
-    el.partyJoinStatus.textContent = 'No encontramos esa party (¿venció, o el código está mal escrito?).';
+    el.partyJoinStatus.textContent = `No pudimos unirte a la party: ${err.message}`;
   } finally {
     el.joinPartyBtn.disabled = false;
   }
