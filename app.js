@@ -33,6 +33,8 @@ const state = {
   spotifyEntries: null, // filled in after picking a playlist, { name, artist }[]
   spotifyAccessToken: null,
   spotifyPlaylists: [],
+  partyCode: null,        // set once you're playing inside a party
+  pendingPartyCode: null, // set while the join banner is showing, before you hit "join"
 };
 
 // ---------- DOM refs ----------
@@ -42,6 +44,7 @@ const screens = {
   loading: document.getElementById('screen-loading'),
   game: document.getElementById('screen-game'),
   end: document.getElementById('screen-end'),
+  partyCreated: document.getElementById('screen-party-created'),
 };
 
 const el = {
@@ -55,7 +58,25 @@ const el = {
   spotifyLoginBtn: document.getElementById('spotify-login-btn'),
   spotifyPlaylistSelect: document.getElementById('spotify-playlist-select'),
   loadPlaylistBtn: document.getElementById('load-playlist-btn'),
+  spotifyOtherUrl: document.getElementById('spotify-other-url'),
+  loadOtherPlaylistBtn: document.getElementById('load-other-playlist-btn'),
   spotifyStatus: document.getElementById('spotify-status'),
+  viewRankingBtn: document.getElementById('view-ranking-btn'),
+  setupRankingList: document.getElementById('setup-ranking-list'),
+
+  loadingLog: document.getElementById('loading-log'),
+
+  partyJoinBanner: document.getElementById('party-join-banner'),
+  partyCodeLabel: document.getElementById('party-code-label'),
+  partyPlayerName: document.getElementById('party-player-name'),
+  joinPartyBtn: document.getElementById('join-party-btn'),
+  partyJoinStatus: document.getElementById('party-join-status'),
+  createPartyBtn: document.getElementById('create-party-btn'),
+  partyShareLink: document.getElementById('party-share-link'),
+  partyShareCode: document.getElementById('party-share-code'),
+  copyPartyLinkBtn: document.getElementById('copy-party-link-btn'),
+  startPartyGameBtn: document.getElementById('start-party-game-btn'),
+  refreshPartyRankingBtn: document.getElementById('refresh-party-ranking-btn'),
 
   progressFill: document.getElementById('progress-fill'),
   progressCount: document.getElementById('progress-count'),
@@ -134,7 +155,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 // register SPOTIFY_REDIRECT_URI as a Redirect URI in your Spotify dashboard
 // (Settings) exactly as it appears once deployed.
 
-const SPOTIFY_CLIENT_ID = 'afef91a1d7be4f6eac409ef86eacb001'; // <- reemplazar
+const SPOTIFY_CLIENT_ID = 'TU_CLIENT_ID_DE_SPOTIFY'; // <- reemplazar
 const SPOTIFY_REDIRECT_URI = window.location.origin + window.location.pathname;
 const SPOTIFY_SCOPES = 'playlist-read-private playlist-read-collaborative';
 
@@ -246,12 +267,16 @@ async function loadSpotifyPlaylists() {
   }
 }
 
-el.loadPlaylistBtn.addEventListener('click', async () => {
-  const playlistId = el.spotifyPlaylistSelect.value;
-  if (!playlistId) return;
+function extractPlaylistId(input) {
+  const match = input.match(/playlist[/:]([a-zA-Z0-9]+)/);
+  return match ? match[1] : input.trim();
+}
 
+async function loadPlaylistTracks(playlistId, triggerBtn) {
+  if (!playlistId) return;
   el.spotifyStatus.textContent = 'Leyendo canciones de la playlist…';
-  el.loadPlaylistBtn.disabled = true;
+  if (triggerBtn) triggerBtn.disabled = true;
+
   try {
     const rawItems = await fetchAllPages(
       `https://api.spotify.com/v1/playlists/${playlistId}/items?limit=50&fields=next,items(item(name,artists(name)))`,
@@ -269,10 +294,20 @@ el.loadPlaylistBtn.addEventListener('click', async () => {
   } catch (err) {
     console.error(err);
     state.spotifyEntries = null;
-    el.spotifyStatus.textContent = 'No pudimos leer esta playlist (¿sos dueño o colaborador?).';
+    el.spotifyStatus.textContent = 'No pudimos leer esta playlist. Solo funciona si sos dueño o colaborador de ella.';
   } finally {
-    el.loadPlaylistBtn.disabled = false;
+    if (triggerBtn) triggerBtn.disabled = false;
   }
+}
+
+el.loadPlaylistBtn.addEventListener('click', () => {
+  loadPlaylistTracks(el.spotifyPlaylistSelect.value, el.loadPlaylistBtn);
+});
+
+el.loadOtherPlaylistBtn.addEventListener('click', () => {
+  const raw = el.spotifyOtherUrl.value.trim();
+  if (!raw) return;
+  loadPlaylistTracks(extractPlaylistId(raw), el.loadOtherPlaylistBtn);
 });
 
 handleSpotifyRedirect();
@@ -284,6 +319,23 @@ function getSelectedTrackEntries() {
 }
 
 // ---------- Setup screen: submit ----------
+
+const MANUAL_LIST_STORAGE_KEY = 'milesimas_manual_list';
+
+try {
+  const savedList = localStorage.getItem(MANUAL_LIST_STORAGE_KEY);
+  if (savedList) el.trackList.value = savedList;
+} catch (err) {
+  // Storage can be blocked (private browsing, etc.) — the game still works, it just won't remember.
+}
+
+el.trackList.addEventListener('input', () => {
+  try {
+    localStorage.setItem(MANUAL_LIST_STORAGE_KEY, el.trackList.value);
+  } catch (err) {
+    // Ignore — non-critical.
+  }
+});
 
 el.setupForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -313,7 +365,7 @@ el.setupForm.addEventListener('submit', async (e) => {
   getAudioCtx();
 
   showScreen('loading');
-  await loadLibrary(entries);
+  await loadLibrary(entries, rounds);
 
   if (state.library.length === 0) {
     showScreen('setup');
@@ -335,6 +387,32 @@ function showSetupError(msg) {
   el.setupError.hidden = false;
 }
 
+el.viewRankingBtn.addEventListener('click', async () => {
+  const list = el.setupRankingList;
+  if (!list.hidden) { list.hidden = true; return; }
+
+  list.hidden = false;
+  list.innerHTML = '<li>Cargando…</li>';
+  try {
+    const resp = await fetch('/api/ranking');
+    if (!resp.ok) throw new Error('ranking-get-failed');
+    const data = await resp.json();
+    list.innerHTML = '';
+    if (!data.ranking || data.ranking.length === 0) {
+      list.innerHTML = '<li>Todavía no hay puntajes guardados.</li>';
+      return;
+    }
+    data.ranking.forEach(item => {
+      const li = document.createElement('li');
+      li.innerHTML = `<span>${escapeHtml(item.name)}</span><span>${item.score} pts</span>`;
+      list.appendChild(li);
+    });
+  } catch (err) {
+    console.error(err);
+    list.innerHTML = '<li>No pudimos cargar el ranking.</li>';
+  }
+});
+
 // ---------- Loading previews from iTunes ----------
 
 async function fetchPreview(entry) {
@@ -347,6 +425,8 @@ async function fetchPreview(entry) {
   return {
     previewUrl: hit.previewUrl,
     artworkUrl: hit.artworkUrl100,
+    foundName: hit.trackName,
+    foundArtist: hit.artistName,
     // Keep the name/artist the player typed in — that's the answer we'll grade against.
     name: entry.name,
     artist: entry.artist || hit.artistName,
@@ -359,30 +439,94 @@ async function decodeBuffer(url) {
   return getAudioCtx().decodeAudioData(arrayBuffer);
 }
 
-async function loadLibrary(entries) {
+function shuffle(array) {
+  const copy = [...array];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function normalizeForMatch(str) {
+  return normalize(str || '').replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function tokenOverlap(a, b) {
+  const setA = new Set(a.split(' ').filter(Boolean));
+  const setB = new Set(b.split(' ').filter(Boolean));
+  if (setA.size === 0 || setB.size === 0) return 0;
+  let common = 0;
+  setA.forEach(tok => { if (setB.has(tok)) common += 1; });
+  return common / Math.min(setA.size, setB.size);
+}
+
+// iTunes sometimes returns a cover version, a different song entirely, or a
+// near-miss — this checks the top hit is actually close enough to what was
+// requested before we trust it as the game's "correct answer" audio.
+function isGoodMatch(requested, found) {
+  const reqName = normalizeForMatch(requested.name);
+  const foundName = normalizeForMatch(found.foundName);
+  if (!reqName || !foundName) return false;
+
+  const nameMatches = foundName.includes(reqName) || reqName.includes(foundName) || tokenOverlap(reqName, foundName) >= 0.6;
+  if (!nameMatches) return false;
+  if (!requested.artist) return true;
+
+  const reqArtist = normalizeForMatch(requested.artist);
+  const foundArtist = normalizeForMatch(found.foundArtist);
+  return foundArtist.includes(reqArtist) || reqArtist.includes(foundArtist) || tokenOverlap(reqArtist, foundArtist) >= 0.4;
+}
+
+function logLoadingAttempt(requested, found, status) {
+  const li = document.createElement('li');
+  if (status === 'ok') {
+    li.className = 'ok';
+    li.textContent = `✓ ${requested.name} — ${requested.artist}`;
+  } else if (status === 'mismatch') {
+    li.className = 'mismatch';
+    li.innerHTML = `✗ ${escapeHtml(requested.name)} — no coincide<small>Encontramos "${escapeHtml(found.foundName)} — ${escapeHtml(found.foundArtist)}"</small>`;
+  } else {
+    li.className = 'not-found';
+    li.textContent = `✗ ${requested.name} — sin resultado en iTunes`;
+  }
+  el.loadingLog.prepend(li);
+}
+
+async function loadLibrary(entries, targetCount) {
   state.library = [];
-  el.progressCount.textContent = `0 / ${entries.length}`;
+  const pool = shuffle(entries);
+  el.loadingLog.innerHTML = '';
+
+  el.progressCount.textContent = `0 / ${targetCount}`;
   el.progressFill.style.width = '0%';
 
-  for (let i = 0; i < entries.length; i++) {
+  for (let i = 0; i < pool.length && state.library.length < targetCount; i++) {
+    const requested = pool[i];
     try {
-      const found = await fetchPreview(entries[i]);
-      if (found) {
+      const found = await fetchPreview(requested);
+      if (!found) {
+        logLoadingAttempt(requested, null, 'not-found');
+      } else if (!isGoodMatch(requested, found)) {
+        logLoadingAttempt(requested, found, 'mismatch');
+      } else {
         const audioBuffer = await decodeBuffer(found.previewUrl);
         state.library.push({
-          id: `t${i}`,
+          id: `t${state.library.length}`,
           name: found.name,
           artist: found.artist,
           previewUrl: found.previewUrl,
           artworkUrl: found.artworkUrl,
           audioBuffer,
         });
+        logLoadingAttempt(requested, found, 'ok');
       }
     } catch (err) {
-      console.error('No se pudo cargar', entries[i], err);
+      console.error('No se pudo cargar', requested, err);
+      logLoadingAttempt(requested, null, 'not-found');
     }
-    el.progressCount.textContent = `${i + 1} / ${entries.length}`;
-    el.progressFill.style.width = `${((i + 1) / entries.length) * 100}%`;
+    el.progressCount.textContent = `${state.library.length} / ${targetCount}`;
+    el.progressFill.style.width = `${Math.min(100, (state.library.length / targetCount) * 100)}%`;
   }
 }
 
@@ -398,9 +542,9 @@ function startRound() {
 
   const maxDurationSec = DURATIONS_MS[state.difficulty][2] / 1000;
   const dur = track.audioBuffer.duration;
-  state.startOffsetSec = dur > maxDurationSec + 1
-    ? Math.random() * (dur - maxDurationSec - 1)
-    : 0;
+  state.startOffsetSec = (track.fixedOffsetSec != null)
+    ? track.fixedOffsetSec
+    : (dur > maxDurationSec + 1 ? Math.random() * (dur - maxDurationSec - 1) : 0);
 
   state.waveformLevels = computeWaveform(track.audioBuffer, state.startOffsetSec, maxDurationSec);
   renderWaveform();
@@ -578,17 +722,19 @@ async function endGame() {
   el.endName.textContent = state.playerName;
   el.endScore.textContent = state.score;
   el.rankingList.innerHTML = '<li>Guardando puntaje…</li>';
+  el.refreshPartyRankingBtn.hidden = !state.partyCode;
   showScreen('end');
 
+  const endpoint = state.partyCode ? `/api/party?code=${state.partyCode}` : '/api/ranking';
+  const body = state.partyCode
+    ? { name: state.playerName, score: state.score }
+    : { name: state.playerName, score: state.score, difficulty: state.difficulty };
+
   try {
-    const resp = await fetch('/api/ranking', {
+    const resp = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: state.playerName,
-        score: state.score,
-        difficulty: state.difficulty,
-      }),
+      body: JSON.stringify(body),
     });
     if (!resp.ok) throw new Error('ranking-post-failed');
     const data = await resp.json();
@@ -614,6 +760,202 @@ function renderRanking(ranking) {
   });
 }
 
-el.playAgainBtn.addEventListener('click', () => {
-  showScreen('setup');
+el.refreshPartyRankingBtn.addEventListener('click', async () => {
+  if (!state.partyCode) return;
+  try {
+    const resp = await fetch(`/api/party?code=${state.partyCode}`);
+    if (!resp.ok) throw new Error('party-refresh-failed');
+    const data = await resp.json();
+    renderRanking(data.ranking);
+  } catch (err) {
+    console.error(err);
+  }
 });
+
+el.playAgainBtn.addEventListener('click', () => {
+  // Inside a party, "play again" replays the exact same room so you can try to beat your score.
+  if (state.partyCode && state.library.length > 0) {
+    state.roundIndex = 0;
+    state.score = 0;
+    state.playedIds = [];
+    startRound();
+  } else {
+    showScreen('setup');
+  }
+});
+
+// ---------- Party mode ----------
+
+function partyShareUrl(code) {
+  return `${window.location.origin}${window.location.pathname}?party=${code}`;
+}
+
+function setSoloControlsVisible(visible) {
+  document.querySelectorAll('[data-solo-only]').forEach(node => { node.hidden = !visible; });
+}
+
+el.createPartyBtn.addEventListener('click', async () => {
+  el.setupError.hidden = true;
+
+  const entries = getSelectedTrackEntries();
+  const rounds = parseInt(el.rounds.value, 10) || 1;
+  const name = el.playerName.value.trim();
+
+  if (entries.length === 0) {
+    const activeTab = document.querySelector('.tab.active').dataset.tab;
+    return showSetupError(
+      activeTab === 'spotify'
+        ? 'Primero cargá una playlist con el botón "Cargar canciones".'
+        : 'Pegá al menos una canción, una por línea.'
+    );
+  }
+  if (!name) return showSetupError('Ingresá tu nombre.');
+
+  state.difficulty = el.setupForm.querySelector('input[name="difficulty"]:checked').value;
+  state.totalRounds = rounds;
+  state.playerName = name;
+  getAudioCtx();
+
+  showScreen('loading');
+  await loadLibrary(entries, rounds);
+
+  if (state.library.length === 0) {
+    showScreen('setup');
+    return showSetupError('No encontramos audio para ninguna de esas canciones. Probá con otros nombres.');
+  }
+  state.totalRounds = Math.min(rounds, state.library.length);
+
+  // Fix each track's clip now, once, so every party member hears exactly the same fragment.
+  const maxDurationSec = DURATIONS_MS[state.difficulty][2] / 1000;
+  state.library.forEach(track => {
+    const dur = track.audioBuffer.duration;
+    track.fixedOffsetSec = dur > maxDurationSec + 1 ? Math.random() * (dur - maxDurationSec - 1) : 0;
+  });
+
+  try {
+    const resp = await fetch('/api/party', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entries: state.library.map(t => ({
+          name: t.name,
+          artist: t.artist,
+          previewUrl: t.previewUrl,
+          startOffsetSec: t.fixedOffsetSec,
+        })),
+        difficulty: state.difficulty,
+        rounds: state.totalRounds,
+      }),
+    });
+    if (!resp.ok) throw new Error('party-create-failed');
+    const data = await resp.json();
+
+    state.partyCode = data.code;
+    el.partyShareLink.value = partyShareUrl(data.code);
+    el.partyShareCode.textContent = data.code;
+    showScreen('partyCreated');
+  } catch (err) {
+    console.error(err);
+    showScreen('setup');
+    showSetupError('No pudimos crear la party (¿ya conectaste la base de datos Redis en Vercel?).');
+  }
+});
+
+el.copyPartyLinkBtn.addEventListener('click', async () => {
+  el.partyShareLink.select();
+  try {
+    await navigator.clipboard.writeText(el.partyShareLink.value);
+    const original = el.copyPartyLinkBtn.textContent;
+    el.copyPartyLinkBtn.textContent = '¡Copiado!';
+    setTimeout(() => { el.copyPartyLinkBtn.textContent = original; }, 1500);
+  } catch (err) {
+    // Clipboard API blocked — the link is already selected as a manual fallback.
+  }
+});
+
+el.startPartyGameBtn.addEventListener('click', () => {
+  state.roundIndex = 0;
+  state.score = 0;
+  state.playedIds = [];
+  startRound();
+});
+
+function detectPartyFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('party');
+  if (!code) return;
+
+  state.pendingPartyCode = code.toUpperCase();
+  el.partyCodeLabel.textContent = state.pendingPartyCode;
+  el.partyJoinBanner.hidden = false;
+  setSoloControlsVisible(false);
+}
+
+el.joinPartyBtn.addEventListener('click', async () => {
+  const name = el.partyPlayerName.value.trim();
+  if (!name) {
+    el.partyJoinStatus.textContent = 'Ingresá tu nombre.';
+    return;
+  }
+
+  el.partyJoinStatus.textContent = 'Cargando la party…';
+  el.joinPartyBtn.disabled = true;
+  getAudioCtx();
+
+  try {
+    const resp = await fetch(`/api/party?code=${state.pendingPartyCode}`);
+    if (!resp.ok) throw new Error('party-not-found');
+    const data = await resp.json();
+    const config = data.config;
+
+    state.playerName = name;
+    state.difficulty = config.difficulty;
+    state.partyCode = state.pendingPartyCode;
+
+    showScreen('loading');
+    el.loadingLog.innerHTML = '';
+    el.progressCount.textContent = `0 / ${config.entries.length}`;
+    el.progressFill.style.width = '0%';
+    state.library = [];
+
+    for (let i = 0; i < config.entries.length; i++) {
+      const item = config.entries[i];
+      try {
+        const audioBuffer = await decodeBuffer(item.previewUrl);
+        state.library.push({
+          id: `t${i}`,
+          name: item.name,
+          artist: item.artist,
+          previewUrl: item.previewUrl,
+          fixedOffsetSec: item.startOffsetSec,
+          audioBuffer,
+        });
+        logLoadingAttempt(item, null, 'ok');
+      } catch (err) {
+        console.error('No se pudo decodificar', item, err);
+        logLoadingAttempt(item, null, 'not-found');
+      }
+      el.progressCount.textContent = `${i + 1} / ${config.entries.length}`;
+      el.progressFill.style.width = `${((i + 1) / config.entries.length) * 100}%`;
+    }
+
+    if (state.library.length === 0) {
+      showScreen('setup');
+      el.partyJoinStatus.textContent = 'No pudimos cargar el audio de esta party.';
+      return;
+    }
+
+    state.totalRounds = state.library.length;
+    state.roundIndex = 0;
+    state.score = 0;
+    state.playedIds = [];
+    startRound();
+  } catch (err) {
+    console.error(err);
+    el.partyJoinStatus.textContent = 'No encontramos esa party (¿venció, o el código está mal escrito?).';
+  } finally {
+    el.joinPartyBtn.disabled = false;
+  }
+});
+
+detectPartyFromUrl();

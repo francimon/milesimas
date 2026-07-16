@@ -21,7 +21,15 @@
     </header>
 
     <form id="setup-form" novalidate>
-      <div class="field">
+      <div id="party-join-banner" hidden>
+        <p class="hint">Te uniste a una party (código <strong id="party-code-label"></strong>). Se juega con la playlist y dificultad que eligió quien la creó.</p>
+        <label for="party-player-name">Tu nombre</label>
+        <input type="text" id="party-player-name" maxlength="24" placeholder="Cómo aparecés en el ranking de la party">
+        <button type="button" id="join-party-btn" class="btn-primary" style="width:100%;margin-top:8px">Unirme y jugar</button>
+        <p class="hint" id="party-join-status"></p>
+      </div>
+
+      <div class="field" data-solo-only>
         <div class="tabs" role="tablist">
           <button type="button" class="tab active" data-tab="spotify" role="tab" aria-selected="true">Playlist de Spotify</button>
           <button type="button" class="tab" data-tab="manual" role="tab" aria-selected="false">Lista manual</button>
@@ -36,6 +44,13 @@
             <label for="spotify-playlist-select">Tu playlist</label>
             <select id="spotify-playlist-select"></select>
             <button type="button" id="load-playlist-btn" class="btn-secondary">Cargar canciones</button>
+
+            <label for="spotify-other-url" style="margin-top:14px">O pegá el link de otra playlist</label>
+            <div class="spotify-fetch-row">
+              <input type="text" id="spotify-other-url" placeholder="https://open.spotify.com/playlist/...">
+              <button type="button" id="load-other-playlist-btn" class="btn-secondary">Cargar</button>
+            </div>
+            <p class="hint">Ojo: por la restricción de Spotify, esto solo funciona si sos dueño o colaborador de esa playlist — no con playlists ajenas que solo seguís.</p>
           </div>
           <p class="hint" id="spotify-status"></p>
         </div>
@@ -43,12 +58,13 @@
         <div class="tab-panel" id="tab-manual" data-panel hidden>
           <label for="track-list">Canciones (una por línea)</label>
           <textarea id="track-list" rows="7" placeholder="Bohemian Rhapsody - Queen&#10;Billie Jean - Michael Jackson&#10;Formato &quot;Canción - Artista&quot;"></textarea>
+          <p class="hint">Se guarda sola en este navegador para la próxima vez.</p>
         </div>
 
         <p class="hint">El audio de cada canción se busca en el catálogo público de iTunes.</p>
       </div>
 
-      <div class="field-row">
+      <div class="field-row" data-solo-only>
         <fieldset class="difficulty">
           <legend>Dificultad</legend>
           <label class="dial">
@@ -74,13 +90,18 @@
         </div>
       </div>
 
-      <div class="field">
+      <div class="field" data-solo-only>
         <label for="player-name">Tu nombre</label>
         <input type="text" id="player-name" maxlength="24" placeholder="Cómo aparecés en el ranking" required>
       </div>
 
       <p id="setup-error" class="error" role="alert" hidden></p>
-      <button type="submit" class="btn-primary">Empezar</button>
+      <div data-solo-only>
+        <button type="submit" class="btn-primary">Empezar</button>
+        <button type="button" id="create-party-btn" class="btn-secondary" style="width:100%;margin-top:10px">Crear party y compartir link</button>
+      </div>
+      <button type="button" id="view-ranking-btn" class="btn-ghost" style="width:100%;margin-top:10px">Ver ranking</button>
+      <ol id="setup-ranking-list" class="ranking-list" hidden style="margin-top:12px"></ol>
     </form>
   </section>
 
@@ -90,6 +111,7 @@
       <p class="loading-label">Buscando fragmentos de audio…</p>
       <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
       <p class="progress-count" id="progress-count">0 / 0</p>
+      <ul id="loading-log" class="loading-log"></ul>
     </div>
   </section>
 
@@ -122,6 +144,18 @@
     <p id="feedback" class="feedback" aria-live="polite"></p>
   </section>
 
+  <!-- Pantalla: party creada -->
+  <section id="screen-party-created" class="screen" data-screen hidden>
+    <h2>¡Party creada!</h2>
+    <p class="hint">Compartí este link para que se unan:</p>
+    <div class="spotify-fetch-row">
+      <input type="text" id="party-share-link" readonly>
+      <button type="button" id="copy-party-link-btn" class="btn-secondary">Copiar</button>
+    </div>
+    <p class="hint">Código: <strong id="party-share-code"></strong></p>
+    <button type="button" id="start-party-game-btn" class="btn-primary" style="width:100%;margin-top:16px">Empezar a jugar</button>
+  </section>
+
   <!-- Pantalla 3: resultados -->
   <section id="screen-end" class="screen" data-screen hidden>
     <h2>Terminaste, <span id="end-name"></span></h2>
@@ -129,7 +163,8 @@
 
     <h3>Ranking</h3>
     <ol id="ranking-list" class="ranking-list"></ol>
-    <p class="hint">Este ranking es compartido — lo ve cualquiera que juegue desde este link, no solo vos.</p>
+    <p class="hint" id="ranking-scope-hint">Este ranking es compartido — lo ve cualquiera que juegue desde este link, no solo vos.</p>
+    <button type="button" id="refresh-party-ranking-btn" class="btn-ghost" hidden style="width:100%;margin-bottom:10px">Actualizar ranking de la party</button>
 
     <button id="play-again-btn" class="btn-primary" type="button">Jugar de nuevo</button>
   </section>
