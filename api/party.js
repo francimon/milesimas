@@ -1,8 +1,9 @@
 // Vercel serverless function — party rooms with a shared song pool.
 //
 // POST  (no ?code)              -> creates a party with a big shared pool, returns { code }
-// POST  ?code=XXXXX&action=join -> atomically claims the next chunk of songs from
-//                                  the pool for this player, returns { entries, difficulty, lives }
+// POST  ?code=XXXXX&action=join -> checks this player's play count against the party's
+//                                  "lives" limit, then atomically claims the next chunk of
+//                                  songs from the pool. Returns { entries, difficulty, livesMax, livesUsed }
 // GET   ?code=XXXXX             -> returns just the ranking (used by "actualizar")
 // POST  ?code=XXXXX             -> submits a score, returns { ranking }
 //
@@ -36,11 +37,11 @@ module.exports = async (req, res) => {
       return;
     }
     if (!rounds || rounds < 1) {
-      res.status(400).json({ error: 'Falta la cantidad de canciones por jugador' });
+      res.status(400).json({ error: 'Falta la cantidad de canciones por partida' });
       return;
     }
 
-    const cleanLives = (typeof lives === 'number' && lives > 0) ? lives : null; // null = unlimited
+    const cleanLives = (typeof lives === 'number' && lives > 0) ? lives : null; // null = sin límite de intentos
 
     const newCode = generateCode();
     await redis.set(
@@ -57,12 +58,35 @@ module.exports = async (req, res) => {
     return;
   }
 
-  // ---- Join: atomically claim the next chunk of songs from the shared pool ----
+  // ---- Join: check this player's remaining attempts, then claim a chunk ----
   if (req.method === 'POST' && action === 'join') {
+    const { name } = req.body || {};
+    if (typeof name !== 'string' || !name.trim()) {
+      res.status(400).json({ error: 'Falta tu nombre' });
+      return;
+    }
+    const playerKey = name.trim().slice(0, 24).toLowerCase();
+
     const config = await redis.get(`party:${code}:config`);
     if (!config) {
       res.status(404).json({ error: 'Party no encontrada o vencida' });
       return;
+    }
+
+    let livesUsed = 0;
+    if (config.lives) {
+      const playsKey = `party:${code}:plays:${playerKey}`;
+      livesUsed = await redis.incr(playsKey);
+      await redis.expire(playsKey, TTL_SECONDS);
+
+      if (livesUsed > config.lives) {
+        res.status(403).json({
+          error: `Ya jugaste tus ${config.lives} intento${config.lives === 1 ? '' : 's'} en esta party.`,
+          livesMax: config.lives,
+          livesUsed: config.lives,
+        });
+        return;
+      }
     }
 
     const rounds = config.rounds;
@@ -83,7 +107,8 @@ module.exports = async (req, res) => {
     res.status(200).json({
       entries,
       difficulty: config.difficulty,
-      lives: config.lives, // null means unlimited
+      livesMax: config.lives, // null means unlimited
+      livesUsed,
       recycled: newCount > poolSize, // true once the pool has wrapped around
     });
     return;
