@@ -155,7 +155,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 // register SPOTIFY_REDIRECT_URI as a Redirect URI in your Spotify dashboard
 // (Settings) exactly as it appears once deployed.
 
-const SPOTIFY_CLIENT_ID = 'TU_CLIENT_ID_DE_SPOTIFY'; // <- reemplazar
+const SPOTIFY_CLIENT_ID = 'afef91a1d7be4f6eac409ef86eacb001'; // <- reemplazar
 const SPOTIFY_REDIRECT_URI = window.location.origin + window.location.pathname;
 const SPOTIFY_SCOPES = 'playlist-read-private playlist-read-collaborative';
 
