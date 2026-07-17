@@ -434,7 +434,7 @@ el.resetRankingBtn.addEventListener('click', async () => {
 
 // ---------- Loading previews from iTunes ----------
 
-async function fetchPreview(entry) {
+async function fetchFromItunes(entry) {
   const term = encodeURIComponent(`${entry.name} ${entry.artist}`.trim());
   const url = `https://itunes.apple.com/search?term=${term}&entity=song&limit=1`;
   const res = await fetch(url);
@@ -442,6 +442,7 @@ async function fetchPreview(entry) {
   const hit = data.results && data.results[0];
   if (!hit || !hit.previewUrl) return null;
   return {
+    source: 'iTunes',
     previewUrl: hit.previewUrl,
     artworkUrl: hit.artworkUrl100,
     foundName: hit.trackName,
@@ -449,6 +450,26 @@ async function fetchPreview(entry) {
     // Keep the name/artist the player typed in — that's the answer we'll grade against.
     name: entry.name,
     artist: entry.artist || hit.artistName,
+  };
+}
+
+// Deezer blocks direct browser requests (no CORS), so this goes through our
+// own /api/preview function. Used as a fallback when iTunes has no result or
+// returns the wrong song — useful for Spanish-language or less mainstream artists.
+async function fetchFromDeezer(entry) {
+  const term = `${entry.name} ${entry.artist}`.trim();
+  const res = await fetch(`/api/preview?q=${encodeURIComponent(term)}`);
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data.found) return null;
+  return {
+    source: 'Deezer',
+    previewUrl: data.previewUrl,
+    artworkUrl: null,
+    foundName: data.foundName,
+    foundArtist: data.foundArtist,
+    name: entry.name,
+    artist: entry.artist || data.foundArtist,
   };
 }
 
@@ -480,7 +501,7 @@ function tokenOverlap(a, b) {
   return common / Math.min(setA.size, setB.size);
 }
 
-// iTunes sometimes returns a cover version, a different song entirely, or a
+// A search hit sometimes is a cover version, a different song entirely, or a
 // near-miss — this checks the top hit is actually close enough to what was
 // requested before we trust it as the game's "correct answer" audio.
 function isGoodMatch(requested, found) {
@@ -501,15 +522,40 @@ function logLoadingAttempt(requested, found, status) {
   const li = document.createElement('li');
   if (status === 'ok') {
     li.className = 'ok';
-    li.textContent = `✓ ${requested.name} — ${requested.artist}`;
+    li.textContent = `✓ ${requested.name} — ${requested.artist} (${found.source})`;
   } else if (status === 'mismatch') {
     li.className = 'mismatch';
-    li.innerHTML = `✗ ${escapeHtml(requested.name)} — no coincide<small>Encontramos "${escapeHtml(found.foundName)} — ${escapeHtml(found.foundArtist)}"</small>`;
+    li.innerHTML = `✗ ${escapeHtml(requested.name)} — no coincide<small>Encontramos "${escapeHtml(found.foundName)} — ${escapeHtml(found.foundArtist)}" en ${escapeHtml(found.source)}</small>`;
   } else {
     li.className = 'not-found';
-    li.textContent = `✗ ${requested.name} — sin resultado en iTunes`;
+    li.textContent = `✗ ${requested.name} — sin resultado en iTunes ni Deezer`;
   }
   el.loadingLog.prepend(li);
+}
+
+// Tries iTunes first (fast, no server hop needed), then falls back to Deezer
+// if there's no good match — between the two, coverage is a lot better,
+// especially for music that Apple's catalog doesn't have.
+async function findPreview(requested) {
+  let bestAttempt = null;
+
+  try {
+    const itunesHit = await fetchFromItunes(requested);
+    if (itunesHit && isGoodMatch(requested, itunesHit)) return { match: itunesHit, lastAttempt: null };
+    if (itunesHit) bestAttempt = itunesHit;
+  } catch (err) {
+    console.error('iTunes falló para', requested, err);
+  }
+
+  try {
+    const deezerHit = await fetchFromDeezer(requested);
+    if (deezerHit && isGoodMatch(requested, deezerHit)) return { match: deezerHit, lastAttempt: null };
+    if (deezerHit) bestAttempt = deezerHit;
+  } catch (err) {
+    console.error('Deezer falló para', requested, err);
+  }
+
+  return { match: null, lastAttempt: bestAttempt };
 }
 
 async function loadLibrary(entries, targetCount) {
@@ -523,22 +569,22 @@ async function loadLibrary(entries, targetCount) {
   for (let i = 0; i < pool.length && state.library.length < targetCount; i++) {
     const requested = pool[i];
     try {
-      const found = await fetchPreview(requested);
-      if (!found) {
-        logLoadingAttempt(requested, null, 'not-found');
-      } else if (!isGoodMatch(requested, found)) {
-        logLoadingAttempt(requested, found, 'mismatch');
-      } else {
-        const audioBuffer = await decodeBuffer(found.previewUrl);
+      const { match, lastAttempt } = await findPreview(requested);
+      if (match) {
+        const audioBuffer = await decodeBuffer(match.previewUrl);
         state.library.push({
           id: `t${state.library.length}`,
-          name: found.name,
-          artist: found.artist,
-          previewUrl: found.previewUrl,
-          artworkUrl: found.artworkUrl,
+          name: match.name,
+          artist: match.artist,
+          previewUrl: match.previewUrl,
+          artworkUrl: match.artworkUrl,
           audioBuffer,
         });
-        logLoadingAttempt(requested, found, 'ok');
+        logLoadingAttempt(requested, match, 'ok');
+      } else if (lastAttempt) {
+        logLoadingAttempt(requested, lastAttempt, 'mismatch');
+      } else {
+        logLoadingAttempt(requested, null, 'not-found');
       }
     } catch (err) {
       console.error('No se pudo cargar', requested, err);
